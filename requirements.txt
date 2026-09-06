@@ -1,0 +1,5 @@
+pyside6
+numpy
+pillow
+rawpy
+opencv-python-headless
