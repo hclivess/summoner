@@ -83,11 +83,14 @@ def luminance(img: np.ndarray) -> np.ndarray:
     return img[..., 0] * 0.2126 + img[..., 1] * 0.7152 + img[..., 2] * 0.0722
 
 
-def analyze(img: np.ndarray) -> dict:
+def analyze(img: np.ndarray, raw: bool = False) -> dict:
     """
     Look at the photo and decide how to develop it. Returns gains and slider-scale amounts that
-    render() applies before the user's own sliders. Everything is damped: auto should carry a photo
-    to "obviously better", never to "obviously processed".
+    render() applies before the user's own sliders. The bar (2026-09-07, measured against camera
+    JPEGs from the raws' own embedded previews): clearly better than what the camera would have
+    produced, while night scenes and silhouettes keep their darkness. Pass raw=True for a raw
+    decode - it has had no tone curve or colour rendering applied, so the baseline adds the
+    contrast and colour the camera's JPEG engine would have.
     """
     height, width = img.shape[:2]
     scale = 384 / max(height, width)
@@ -119,19 +122,32 @@ def analyze(img: np.ndarray) -> dict:
     dark_frac = float((lum < 0.06).mean())
     low_key = float(np.clip((dark_frac - 0.18) / 0.25, 0.0, 1.0))
 
-    # Exposure: push the midtone median toward 0.40, damped, at most 2 EV - but never so far that
-    # the bright end (p95) would blow out, and much more gently on low-key scenes.
+    # Exposure: push the midtone median toward 0.40 - but never so far that the bright end (p95)
+    # would blow out, and much more gently on low-key scenes. The measurement is in gamma-encoded
+    # values while render() applies exposure in linear light, where a gamma-space ratio r needs
+    # 2.2*log2(r) EV - without that factor every correction lands ~2.2x weaker than intended
+    # (the chronic "dimmer than the camera JPEG" bug, 2026-09-07).
     median = float(np.median(lum))
     p95 = float(np.percentile(lum, 95.0))
-    ev = math.log2(0.40 / max(median, 1e-4)) * 0.7
+    ev_want = 2.2 * math.log2(0.40 / max(median, 1e-4)) * 0.9
+    ev, deficit = ev_want, 0.0
     if ev > 0.0:
-        ev = min(ev, max(math.log2(0.85 / max(p95, 1e-4)), 0.0))
+        ev = min(ev, max(2.2 * math.log2(0.92 / max(p95, 1e-4)), 0.0))
+        # what the cap refused is the backlit signal: a shaded subject against a bright
+        # background (group under a tree, DSC01106) cannot be lifted globally without blowing
+        # the background - the remaining lift is assigned to the shadows instead
+        deficit = ev_want - ev
     ev *= 1.0 - 0.7 * low_key
-    ev = float(np.clip(ev, -2.0, 2.0))
+    ev = float(np.clip(ev, -3.0, 3.0))
 
-    # Levels: stretch so 0.5 % pixel tails reach toward black and white, half strength.
-    black = float(np.percentile(lum, 0.5)) * 0.5
-    white = 1.0 - (1.0 - float(np.percentile(lum, 99.5))) * 0.5
+    # Levels: anchor the black point decisively and stretch the top - a raw decode is flat, and
+    # timid levels were the biggest visible gap to the camera's own JPEG (washed, milky output).
+    # Measured here in post-exposure terms (levels apply after the EV gain in render), else the
+    # stretch re-crushes lifted shade and blows what the exposure cap protected. The black cap
+    # keeps a bimodal shade-plus-sun frame from having its whole shade half counted as "black".
+    gamma_gain = 2.0 ** (ev / 2.2)
+    black = min(float(np.percentile(lum, 0.5)) * gamma_gain * 0.8, 0.08)
+    white = 1.0 - (1.0 - min(float(np.percentile(lum, 99.5)) * gamma_gain, 1.0)) * 0.7
     white = max(white, black + 0.05)
 
     # Recovery: the more of the frame is blown or crushed, the more we pull back / lift.
@@ -139,14 +155,19 @@ def analyze(img: np.ndarray) -> dict:
     blown = float((lum > 0.97).mean())
     crushed = float((lum < 0.03).mean())
     highlights = -min(60.0, blown * 500.0)
-    shadows = min(50.0, crushed * 400.0) * (1.0 - 0.9 * low_key)
+    shadows = min(55.0, crushed * 300.0 + deficit * 30.0) * (1.0 - 0.9 * low_key)
+
+    # A raw decode has no tone curve or colour rendering: give it the punch and colour the
+    # camera's JPEG engine applies, scaled back on low-key scenes.
+    curve = (16.0 if raw else 0.0) * (1.0 - 0.5 * low_key)
+    color = (14.0 if raw else 0.0) * (1.0 - 0.5 * low_key)
 
     return {"gain_r": gain_r, "gain_b": gain_b, "ev": ev, "black": black, "white": white,
-            "highlights": highlights, "shadows": shadows}
+            "highlights": highlights, "shadows": shadows, "curve": curve, "color": color}
 
 
 NEUTRAL_ANALYSIS = {"gain_r": 1.0, "gain_b": 1.0, "ev": 0.0, "black": 0.0, "white": 1.0,
-                    "highlights": 0.0, "shadows": 0.0}
+                    "highlights": 0.0, "shadows": 0.0, "curve": 0.0, "color": 0.0}
 
 
 # ---------------------------------------------------------------- develop
@@ -195,13 +216,21 @@ def render(img: np.ndarray, settings: dict, analysis: dict = None) -> np.ndarray
             mask = np.clip((soft - 0.5) * 2.0, 0.0, 1.0) ** 1.5
             img += (highlights / 100.0) * 0.35 * mask[..., None] * img
         if shadows:
-            mask = np.clip(1.0 - soft * 2.0, 0.0, 1.0) ** 1.5
-            img += (shadows / 100.0) * 0.55 * mask[..., None] * (1.0 - img)
+            # gamma-style lift on a blurred-luminance mask: multiplicative, so no additive fog
+            # (which washed real photos milky), with true blacks anchored by a smoothstep weight
+            # so night skies and silhouettes keep their depth (2026-09-07)
+            mask = np.clip(1.0 - soft / 0.6, 0.0, 1.0) ** 1.2
+            exponent = (1.0 / (1.0 + (shadows / 100.0) * 1.5 * mask))[..., None]
+            lifted = np.power(np.clip(img, 1e-6, 1.0), exponent)
+            weight = np.clip(img / 0.15, 0.0, 1.0)
+            weight = weight * weight * (3.0 - 2.0 * weight)
+            img += (lifted - img) * weight
         img = np.clip(img, 0.0, 1.0)
 
-    # --- contrast: blend toward a smoothstep S-curve
-    if s["contrast"]:
-        amount = s["contrast"] / 100.0
+    # --- contrast: blend toward a smoothstep S-curve (user slider + the analysis baseline)
+    contrast = float(np.clip(s["contrast"] + a.get("curve", 0.0), -100.0, 100.0))
+    if contrast:
+        amount = contrast / 100.0
         curve = img * img * (3.0 - 2.0 * img)
         img = np.clip(img + amount * (curve - img), 0.0, 1.0)
 
@@ -211,13 +240,14 @@ def render(img: np.ndarray, settings: dict, analysis: dict = None) -> np.ndarray
         soft = _gaussian(lum, max(3.0, max(img.shape[:2]) / 100.0))
         img = np.clip(img + (s["clarity"] / 100.0) * 0.6 * (lum - soft)[..., None], 0.0, 1.0)
 
-    # --- vibrance / saturation on chroma
-    if s["vibrance"] or s["saturation"]:
+    # --- vibrance / saturation on chroma (user sliders + the analysis colour baseline)
+    vibrance = float(np.clip(s["vibrance"] + a.get("color", 0.0), -100.0, 100.0))
+    if vibrance or s["saturation"]:
         lum3 = luminance(img)[..., None]
         chroma = img - lum3
         sat_now = np.abs(chroma).max(axis=2, keepdims=True) * 2.0
         factor = (1.0 + s["saturation"] / 100.0
-                  + (s["vibrance"] / 100.0) * np.clip(1.0 - sat_now, 0.0, 1.0))
+                  + (vibrance / 100.0) * np.clip(1.0 - sat_now, 0.0, 1.0))
         img = np.clip(lum3 + chroma * np.clip(factor, 0.0, None), 0.0, 1.0)
 
     # --- denoise: edge-preserving bilateral, chroma smoothed harder than luminance
@@ -303,7 +333,8 @@ def develop_file(source: str, settings: dict, progress=None) -> str:
     report("decode")
     img, exif = decode(source)
     report("develop")
-    analysis = analyze(img) if settings.get("auto_develop", True) else NEUTRAL_ANALYSIS
+    raw = os.path.splitext(source)[1].lower() in RAW_EXTENSIONS
+    analysis = analyze(img, raw=raw) if settings.get("auto_develop", True) else NEUTRAL_ANALYSIS
     img = render(img, settings, analysis)
     report("save")
     return save(img, destination(source, settings), settings, exif)

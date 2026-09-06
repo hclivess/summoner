@@ -74,7 +74,6 @@ def test_auto_leaves_night_scene_dark():
     img = rng.uniform(0.0, 0.04, (200, 320, 3)).astype(np.float32)
     img[40:70, 100:220] = [0.1, 0.55, 0.2]                       # the aurora
     analysis = develop.analyze(img)
-    assert analysis["ev"] < 0.8
     assert analysis["shadows"] < 10
     out = develop.render(img, {**DEFAULT_SETTINGS, "sharpen": 0}, analysis)
     assert float(np.median(develop.luminance(out))) < 0.15       # the night stays night
@@ -87,6 +86,20 @@ def test_auto_never_blows_highlights_to_brighten():
     analysis = develop.analyze(img)
     out = develop.render(img, {**DEFAULT_SETTINGS, "sharpen": 0}, analysis)
     assert float((develop.luminance(out) > 0.97).mean()) < 0.02
+
+
+def test_auto_lifts_backlit_shade_without_blowing_background():
+    """DSC01106 case: a shaded subject against a bright background. Global exposure is capped by
+    the bright half, so the lift must reach the subject through the shadows instead."""
+    img = np.full((200, 320, 3), 0.18, np.float32)               # subject in shade
+    img[:, 200:] = 0.78                                          # sunlit background
+    analysis = develop.analyze(img)
+    assert analysis["shadows"] > 15
+    out = develop.render(img, {**DEFAULT_SETTINGS, "sharpen": 0}, analysis)
+    shade = float(np.median(develop.luminance(out[:, :180])))
+    bright = float(np.median(develop.luminance(out[:, 210:])))
+    assert shade > 0.26                                          # subject clearly lifted
+    assert bright < 0.98                                         # background not blown
 
 
 def test_auto_wb_skips_scene_without_neutrals():

@@ -167,7 +167,8 @@ class PreviewWorker(QThread):
                         img = cv2.resize(img, (max(1, round(img.shape[1] * scale)),
                                                max(1, round(img.shape[0] * scale))),
                                          interpolation=cv2.INTER_AREA)
-                    self._cache = (path, img, develop.analyze(img))
+                    raw = os.path.splitext(path)[1].lower() in develop.RAW_EXTENSIONS
+                    self._cache = (path, img, develop.analyze(img, raw=raw))
                 _, base, analysis = self._cache
                 if show_original:
                     out = base

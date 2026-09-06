@@ -82,6 +82,20 @@ reputation with Microsoft.
 The GitHub workflow builds all three platforms on every tag and attaches them to the release; the Linux build runs a
 headless self-test (`SUMMONER_SELFTEST=<folder of photos>`) on the frozen binary against generated sample scenes.
 
+## Changes in 1.1
+
+Auto develop rebuilt against real raws, benchmarked frame by frame against the camera's own JPEG
+and a reference edit — 1.0's auto was dim and washed-out on raw files.
+
+- Fixed the exposure unit bug: corrections were computed in gamma space but applied in linear
+  light, landing ~2.2× weaker than intended. Raw output was chronically dimmer than the camera JPEG.
+- The additive shadow lift washed photos milky; replaced with a multiplicative gamma lift that
+  anchors true blacks, so night skies and silhouettes keep their depth.
+- Raw decodes now get the tone curve and colour rendering the camera's JPEG engine would apply
+  (JPEG input is left as shot); black point anchored decisively, levels measured post-exposure.
+- Backlit scenes (shaded subject, bright background): the brightening the highlight cap refuses
+  globally is now applied to the shadows, so faces under a tree come out lifted, not murky.
+
 ## Changes in 1.0
 
 First release, built to the [hclivess house standard](https://github.com/hclivess/beautiful-software).
