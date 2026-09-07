@@ -102,6 +102,18 @@ def test_auto_lifts_backlit_shade_without_blowing_background():
     assert bright < 0.98                                         # background not blown
 
 
+def test_auto_lifts_backlit_minority_subject():
+    """DSC01114 case: a small dark subject against a dominant bright sky. The median looks healthy,
+    so exposure and its deficit do nothing - the shade fraction itself must drive the lift."""
+    img = np.full((200, 320, 3), 0.62, np.float32)               # dominant bright sky
+    img[120:, 60:260] = 0.16                                     # the face in shadow
+    analysis = develop.analyze(img)
+    out = develop.render(img, {**DEFAULT_SETTINGS, "sharpen": 0}, analysis)
+    subject = float(np.median(develop.luminance(out[140:, 80:240])))
+    assert subject > 0.20                                        # clearly lifted from 0.16
+    assert float((develop.luminance(out) > 0.97).mean()) < 0.02  # sky not blown
+
+
 def test_auto_wb_skips_scene_without_neutrals():
     """Grey-world on a green-dominated frame would go magenta; without neutral pixels, no WB."""
     img = np.tile(np.asarray([0.16, 0.40, 0.12], np.float32), (200, 320, 1))

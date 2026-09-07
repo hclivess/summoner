@@ -121,22 +121,31 @@ def analyze(img: np.ndarray, raw: bool = False) -> dict:
     # pixels under 0.06 luminance; normal frames with dark clothing or shadow stay at or below 0.15.
     dark_frac = float((lum < 0.06).mean())
     low_key = float(np.clip((dark_frac - 0.18) / 0.25, 0.0, 1.0))
+    # A frame with a genuinely bright region is not a night scene, however dark its subject -
+    # it is backlit (a face against a cloudy sky) and needs the lift low_key would suppress.
+    p95 = float(np.percentile(lum, 95.0))
+    low_key *= float(np.clip((0.80 - p95) / 0.25, 0.0, 1.0))
 
     # Exposure: push the midtone median toward 0.40 - but never so far that the bright end (p95)
     # would blow out, and much more gently on low-key scenes. The measurement is in gamma-encoded
     # values while render() applies exposure in linear light, where a gamma-space ratio r needs
     # 2.2*log2(r) EV - without that factor every correction lands ~2.2x weaker than intended
     # (the chronic "dimmer than the camera JPEG" bug, 2026-09-07).
+    # The cap targets p95 at 0.80, not brighter: a blue sky pushed to 0.9+ luminance is a white
+    # sky. High-DR scenes get their lift locally through the shadows (the deficit) instead.
     median = float(np.median(lum))
-    p95 = float(np.percentile(lum, 95.0))
     ev_want = 2.2 * math.log2(0.40 / max(median, 1e-4)) * 0.9
     ev, deficit = ev_want, 0.0
     if ev > 0.0:
-        ev = min(ev, max(2.2 * math.log2(0.92 / max(p95, 1e-4)), 0.0))
+        ev = min(ev, max(2.2 * math.log2(0.80 / max(p95, 1e-4)), 0.0))
         # what the cap refused is the backlit signal: a shaded subject against a bright
         # background (group under a tree, DSC01106) cannot be lifted globally without blowing
         # the background - the remaining lift is assigned to the shadows instead
         deficit = ev_want - ev
+    else:
+        # a bright median is usually deliberate (sky-dominated frames); darkening it globally
+        # crushes whatever sits in shadow, so pull down far more gently
+        ev *= 0.4
     ev *= 1.0 - 0.7 * low_key
     ev = float(np.clip(ev, -3.0, 3.0))
 
@@ -146,7 +155,7 @@ def analyze(img: np.ndarray, raw: bool = False) -> dict:
     # stretch re-crushes lifted shade and blows what the exposure cap protected. The black cap
     # keeps a bimodal shade-plus-sun frame from having its whole shade half counted as "black".
     gamma_gain = 2.0 ** (ev / 2.2)
-    black = min(float(np.percentile(lum, 0.5)) * gamma_gain * 0.8, 0.08)
+    black = min(float(np.percentile(lum, 0.5)) * gamma_gain * 0.8, 0.04)
     white = 1.0 - (1.0 - min(float(np.percentile(lum, 99.5)) * gamma_gain, 1.0)) * 0.7
     white = max(white, black + 0.05)
 
@@ -155,7 +164,12 @@ def analyze(img: np.ndarray, raw: bool = False) -> dict:
     blown = float((lum > 0.97).mean())
     crushed = float((lum < 0.03).mean())
     highlights = -min(60.0, blown * 500.0)
-    shadows = min(55.0, crushed * 300.0 + deficit * 30.0) * (1.0 - 0.9 * low_key)
+    # Shade drives the lift too: a backlit minority subject (face against a cloudy sky) leaves
+    # the median healthy and the deficit small, yet sits in shadow. Measured after exposure.
+    shade_frac = float((lum * gamma_gain < 0.25).mean())
+    shade_boost = 55.0 * float(np.clip((shade_frac - 0.12) / 0.30, 0.0, 1.0))
+    shadows = (min(60.0, crushed * 300.0 + deficit * 35.0 + shade_boost)
+               * (1.0 - 0.9 * low_key))
 
     # A raw decode has no tone curve or colour rendering: give it the punch and colour the
     # camera's JPEG engine applies, scaled back on low-key scenes.
@@ -216,15 +230,16 @@ def render(img: np.ndarray, settings: dict, analysis: dict = None) -> np.ndarray
             mask = np.clip((soft - 0.5) * 2.0, 0.0, 1.0) ** 1.5
             img += (highlights / 100.0) * 0.35 * mask[..., None] * img
         if shadows:
-            # gamma-style lift on a blurred-luminance mask: multiplicative, so no additive fog
-            # (which washed real photos milky), with true blacks anchored by a smoothstep weight
-            # so night skies and silhouettes keep their depth (2026-09-07)
-            mask = np.clip(1.0 - soft / 0.6, 0.0, 1.0) ** 1.2
-            exponent = (1.0 / (1.0 + (shadows / 100.0) * 1.5 * mask))[..., None]
-            lifted = np.power(np.clip(img, 1e-6, 1.0), exponent)
+            # local tone mapping: each region gets a gain from its blurred luminance, so a dark
+            # subject rises toward the midtone while a bright sky's gain stays at 1. Multiplicative
+            # (no additive fog), and true blacks are anchored by a smoothstep weight so night skies
+            # and silhouettes keep their depth (2026-09-07, polo-field and backlit-face frames).
+            strength = shadows / 100.0
+            gain = ((0.45 + 1e-4) / (soft + 1e-4)) ** (strength * 1.3)
+            gain = np.clip(gain, 1.0, 1.0 + strength * 1.8)[..., None]
             weight = np.clip(img / 0.15, 0.0, 1.0)
             weight = weight * weight * (3.0 - 2.0 * weight)
-            img += (lifted - img) * weight
+            img += (img * gain - img) * weight
         img = np.clip(img, 0.0, 1.0)
 
     # --- contrast: blend toward a smoothstep S-curve (user slider + the analysis baseline)

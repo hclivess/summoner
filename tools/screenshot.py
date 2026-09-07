@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
-Take thumb.png headlessly: QT_QPA_PLATFORM=offscreen python tools/screenshot.py
-Runs the app on REAL sample inputs (generated, invented scenes - no user material), waits for the
-queue to finish, then grabs the window. Never fake the state by hand-editing labels.
+Take thumb.png headlessly: QT_QPA_PLATFORM=offscreen python tools/screenshot.py [photo-folder]
+Runs the app on REAL sample inputs, waits for the queue to finish, then grabs the window.
+Pass a folder of real, freely-licensed photos (CC0 raws) for the screenshot that ships in the
+README - never anyone's personal material (STANDARD.md 11) and never a faked state. Without an
+argument it falls back to the generated scenes used by CI.
 """
 import os
 import sys
@@ -16,11 +18,17 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
 from config import DEFAULT_SETTINGS
+import develop
 import main as app_main
 from tools.make_samples import write_samples
 
 work = tempfile.mkdtemp(prefix="summoner-shot-")
-samples = write_samples(os.path.join(work, "shoot"))
+if len(sys.argv) > 1:
+    folder = sys.argv[1]
+    samples = [os.path.join(folder, f) for f in sorted(os.listdir(folder))
+               if develop.is_photo(os.path.join(folder, f))]
+else:
+    samples = write_samples(os.path.join(work, "shoot"))
 
 app = QApplication(sys.argv)
 app.setStyle("Fusion")

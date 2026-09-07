@@ -3,7 +3,7 @@ summoner - configuration and constants (the only place APP_NAME / APP_VERSION li
 """
 
 APP_NAME = "summoner"       # lowercase, hyphenated; also the binary / archive name
-APP_VERSION = "1.1"         # bump here, then tag v<APP_VERSION>
+APP_VERSION = "1.2"         # bump here, then tag v<APP_VERSION>
 WINDOW_MIN_WIDTH = 820
 WINDOW_MIN_HEIGHT = 560
 

@@ -82,6 +82,21 @@ reputation with Microsoft.
 The GitHub workflow builds all three platforms on every tag and attaches them to the release; the Linux build runs a
 headless self-test (`SUMMONER_SELFTEST=<folder of photos>`) on the frozen binary against generated sample scenes.
 
+## Changes in 1.2
+
+Auto develop validated against an entire card: 263 real raws developed with zero failures and
+scored frame by frame against the camera's own JPEGs, plus raw samples from nine other camera
+makers (Canon CR2/CR3, Nikon NEF, Fujifilm RAF, Olympus ORF, Panasonic RW2, Pentax PEF, Sony ARW).
+
+- Local tone mapping replaces the global-only lift: a dark subject rises toward the midtone while
+  a bright sky's gain stays at 1 - backlit faces and groups in shade come out lifted, not murky.
+- The exposure cap now targets the bright end at 0.80: a blue sky is no longer pushed to white.
+- Night detection is gated on the bright end, so a shaded subject against a bright sky is treated
+  as backlit (and lifted), never as a night scene (and left dark).
+- A dominant bright sky no longer drags the whole frame darker; the shade fraction itself now
+  drives shadow lift, so a small subject against a big sky is still rescued.
+- The README screenshot is a real run on real, freely-licensed camera raws.
+
 ## Changes in 1.1
 
 Auto develop rebuilt against real raws, benchmarked frame by frame against the camera's own JPEG
